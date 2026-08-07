@@ -110,9 +110,9 @@ def main():
     if topic:
         title = topic
     else:
-        title = "Bajka dla dzieci"
+        title = "Psychologia i rozwój osobisty"
     
-    # Include story text in description
+    # Include content text in description
     story_text = ""
     story_file = Path('output/story.txt')
     if story_file.exists():
@@ -122,11 +122,12 @@ def main():
 
 {story_text}
 
-#BajkiDlaDzieci #Polski #DlaDzieci #Shorts"""
+#Psychologia #RozwójOsobisty #SelfHelp #Shorts"""
     
     tags = [
-        'Bajki', 'Dzieci', 'Zwierzęta', 'Polska', 'Kids',
-        'Shorts', 'Animacja', 'Bajki dla dzieci', 'Polish'
+        'Psychologia', 'Rozwój osobisty', 'Self Help', 'Polska',
+        'Shorts', 'Mindfulness', 'Psychologia pozytywna', 'Polish',
+        'Emocje', 'Relacje', 'Motywacja'
     ]
     
     # Upload

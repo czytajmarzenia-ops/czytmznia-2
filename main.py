@@ -3,12 +3,20 @@ import re
 import datetime
 import subprocess
 import random
+import json
 from pathlib import Path
 from urllib.parse import quote
 import requests
 import time
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 # ---------------- CONFIG ----------------
+
+POLLINATIONS_API_KEY = os.getenv("POLLINATIONS_API_KEY")
 
 # LANGUAGE SETTINGS (Change this for different languages)
 LANGUAGE_CONFIG = {
@@ -74,212 +82,300 @@ def ensure_dirs():
             except Exception:
                 pass
 
-def choose_topic_for_today():
-    if not os.path.exists(TOPICS_FILE):
-        print(f"[topics] {TOPICS_FILE} not found!")
-        return "Cute Animal Adventure"
+def get_all_used_topics():
+    """Get all previously used topics to prevent duplicates."""
+    used = set()
+    if os.path.exists("used_topics.txt"):
+        with open("used_topics.txt", "r", encoding="utf-8") as f:
+            for line in f:
+                if ": " in line:
+                    topic = line.split(": ", 1)[1].strip()
+                    used.add(topic.lower())
+                elif " - " in line:
+                    topic = line.split(" - ", 1)[1].strip()
+                    used.add(topic.lower())
+                else:
+                    used.add(line.strip().lower())
+    return used
 
-    with open(TOPICS_FILE, "r", encoding="utf-8") as f:
-        topics = [line.strip() for line in f if line.strip()]
+def choose_topic_for_today():
+    """Select and consume a topic. Auto-generates new unique topics when running low."""
+    if not os.path.exists(TOPICS_FILE):
+        print(f"[topics] {TOPICS_FILE} not found! Generating initial topics...")
+        from generate_topics import generate_polish_psychology_topics, save_topics_to_file
+        new_topics = generate_polish_psychology_topics(100)
+        save_topics_to_file(new_topics)
+
+    try:
+        with open(TOPICS_FILE, "r", encoding="utf-8") as f:
+            topics = [line.strip() for line in f if line.strip()]
+        print(f"[topics] Loaded {len(topics)} topics")
+    except Exception as e:
+        print(f"[topics] ERROR reading {TOPICS_FILE}: {e}")
+        return "Psychologia i rozwój osobisty"
+
+    if len(topics) < 30:
+        print(f"[topics] Only {len(topics)} topics left. Generating 100 new unique topics...")
+        from generate_topics import generate_polish_psychology_topics
+
+        used_topics = get_all_used_topics()
+        existing_topics_lower = set(t.lower() for t in topics)
+        all_existing = used_topics.union(existing_topics_lower)
+
+        print(f"[topics] Already used/existing: {len(all_existing)} topics")
+        attempts = 0
+        new_unique_topics = []
+        while len(new_unique_topics) < 100 and attempts < 5:
+            batch = generate_polish_psychology_topics(150)
+            for topic in batch:
+                if topic.lower() not in all_existing:
+                    new_unique_topics.append(topic)
+                    all_existing.add(topic.lower())
+                    if len(new_unique_topics) >= 100:
+                        break
+            attempts += 1
+
+        print(f"[topics] Generated {len(new_unique_topics)} unique new topics (0 duplicates)")
+        topics.extend(new_unique_topics)
+        try:
+            with open(TOPICS_FILE, "w", encoding="utf-8") as f:
+                f.write("\n".join(topics) + "\n")
+                f.flush()
+                os.fsync(f.fileno())
+            print(f"[topics] Now {len(topics)} topics available")
+        except Exception as e:
+            print(f"[topics] ERROR saving new topics: {e}")
+
     if not topics:
-        print("[topics] No topics found! Using fallback.")
-        return "Mały miś w lesie"
-    
-    # Select from the top 5 topics randomly for variety
-    # (In case the push fails, we don't always get the exact same one)
-    sample_size = min(len(topics), 5)
-    selected_index = random.randint(0, sample_size - 1)
-    selected_topic = topics.pop(selected_index)
-    
-    # 2. Save to used topics history
-    with open("used_topics.txt", "a", encoding="utf-8") as f:
-        f.write(f"{datetime.datetime.now().strftime('%Y-%m-%d')} - {selected_topic}\n")
-    
-    # 3. Remove from topics.txt
-    with open(TOPICS_FILE, "w", encoding="utf-8") as f:
-        f.write("\n".join(topics) + "\n")
-    
-    print(f"[topics] Selected and consumed topic: {selected_topic}")
+        print("[topics] No topics available! Using fallback.")
+        return "Psychologia i rozwój osobisty"
+
+    selected_topic = topics[0]
+    remaining_topics = topics[1:]
+
+    print(f"[topics] Topic selected: {selected_topic}")
+    print(f"[topics] Remaining: {len(remaining_topics)}")
+
+    try:
+        with open(TOPICS_FILE, "w", encoding="utf-8") as f:
+            f.write("\n".join(remaining_topics) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        with open(TOPICS_FILE, "r", encoding="utf-8") as f:
+            verification = [line.strip() for line in f if line.strip()]
+        if selected_topic in verification:
+            print(f"[topics] WARNING: Topic still in file after removal!")
+        else:
+            print(f"[topics] Topic successfully removed from topics.txt")
+    except Exception as e:
+        print(f"[topics] ERROR updating {TOPICS_FILE}: {e}")
+
+    try:
+        today = datetime.datetime.now()
+        with open("used_topics.txt", "a", encoding="utf-8") as f:
+            f.write(f"{today.strftime('%Y-%m-%d')}: {selected_topic}\n")
+            f.flush()
+        print(f"[topics] Topic logged to used_topics.txt")
+    except Exception as e:
+        print(f"[topics] WARNING: Could not log topic: {e}")
+
     return selected_topic
 
-def generate_story_with_pollinations(topic: str) -> str:
-    """Generate a short children's story in the target language using paid Pollinations API."""
-    api_key = os.getenv("POLLINATIONS_API_KEY")
-    if not api_key:
-        raise ValueError("POLLINATIONS_API_KEY is missing! Paid API access is required for story generation.")
-
+def generate_psychology_content(topic: str) -> str:
+    """Generate a short psychology/self-improvement content in Polish - NOT a story."""
     lang_name = LANGUAGE_CONFIG["name"]
-    
-    system = (
-        f"You are a creative writer specializing in children's stories in {lang_name} language. "
-        f"Write a short, interesting children's story (3-8 years old) in {lang_name} about the given topic. "
-        f"Keep the story to 80-130 words. Use simple, engaging language appropriate for young children. "
-        f"Focus on the specific topic provided. "
-        f"Include no title, just the story content."
-    )
-    prompt = f"Topic: {topic}. Write a wonderful children's story about this topic in {lang_name} language."
 
-    url = f"https://gen.pollinations.ai/text/{quote(prompt)}"
-    headers = {"Authorization": f"Bearer {api_key}"}
-    params = {
-        "model": "openai", # High quality text model for stories
-        "temperature": 1.0,
-        "system": system,
-        "json": False
+    full_prompt = (
+        f"Write a short inspiring content in {lang_name} about psychology and self-improvement, "
+        f"strictly on the topic: {topic}. "
+        f"Do NOT write a story. Do NOT use characters or animals. "
+        f"Write direct advice, tips, or insights about the topic. "
+        f"Include practical advice or a life lesson. "
+        f"Length: 80-120 words. Simple language. Only the content, no title."
+    )
+
+    url = "https://gen.pollinations.ai/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {POLLINATIONS_API_KEY}",
+        "Content-Type": "application/json"
     }
-
-    print(f"[story] Generating {lang_name} story for topic: {topic} (Paid API)")
-    try:
-        # Add random seed for variety
-        params["seed"] = random.randint(1, 1000000)
-        
-        r = requests.get(url, headers=headers, params=params, timeout=60)
-        r.raise_for_status()
-        text = r.text.strip()
-    except Exception as e:
-        print(f"[story] Error with Paid API: {e}")
-        raise e
-
-    words = text.split()
-    if len(words) > STORY_MAX_WORDS:
-        text = " ".join(words[:STORY_MAX_WORDS])
-
-    with open(STORY_FILE, "w", encoding="utf-8") as f:
-        f.write(text)
-
-    print(f"[story] {lang_name} story generated ({len(text.split())} words)")
-    return text
-
-def generate_visual_prompts(story: str) -> list:
-    """Generate 8 distinct ENGLISH visual descriptions from the story using Paid API."""
-    print(f"[scenes] Generowanie opisów wizualnych po angielsku (Paid API)...")
-    
-    api_key = os.getenv("POLLINATIONS_API_KEY")
-    lang_name = LANGUAGE_CONFIG["name"]
-    
-    system = (
-        f"You are an expert at creating image prompts for 3D animations. "
-        f"Read this {lang_name} story and generate exactly {NUM_IMAGES} distinct, detailed visual image descriptions in ENGLISH. "
-        f"Focus on character expressions, cute animals, and beautiful backgrounds. "
-        f"Styling: Pixar/Disney 3D animation. "
-        f"Output ONLY the descriptions, one per line. No numbering, no extra text."
-    )
-    
-    prompt = f"Story: {story}\n\nGenerate {NUM_IMAGES} detailed visual descriptions for images in English."
-    
-    url = f"https://gen.pollinations.ai/text/{quote(prompt)}"
-    headers = {"Authorization": f"Bearer {api_key}"}
-    params = {
+    payload = {
         "model": "openai",
-        "system": system,
-        "seed": random.randint(1, 1000),
-        "json": False
+        "messages": [
+            {"role": "system", "content": "You are a psychology and self-improvement expert writing in Polish. Write direct advice, not stories."},
+            {"role": "user", "content": full_prompt}
+        ]
     }
-    
+
+    print(f"[content] Generating psychology content ({lang_name}): {topic}")
+
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            r = requests.post(url, headers=headers, json=payload, timeout=60)
+            r.raise_for_status()
+            data = r.json()
+            text = data['choices'][0]['message']['content'].strip()
+            words = text.split()
+
+            if len(words) < 50:
+                print(f"[content] Content too short ({len(words)} words), retry {attempt + 1}/{max_retries}...")
+                if attempt < max_retries - 1:
+                    time.sleep(2)
+                    continue
+                else:
+                    raise ValueError(f"Content too short after {max_retries} retries: {len(words)} words")
+
+            if len(words) > STORY_MAX_WORDS:
+                text = " ".join(words[:STORY_MAX_WORDS])
+                words = text.split()
+
+            with open(STORY_FILE, "w", encoding="utf-8") as f:
+                f.write(text)
+
+            print(f"[content] Psychology content generated ({len(words)} words)")
+            return text
+
+        except Exception as e:
+            print(f"[content] Error attempt {attempt + 1}/{max_retries}: {e}")
+            if attempt < max_retries - 1:
+                time.sleep(3)
+            else:
+                fallback = (
+                    f"Każdego dnia mamy wybór, by dbać o siebie. {topic}. "
+                    f"Sukces zaczyna się od małych codziennych działań. "
+                    f"Kultywując pozytywne nastawienie, transformujemy swoje życie. "
+                    f"Sekretem jest wytrwałość i zaufanie do siebie. "
+                    f"Wierz w siebie, a reszta pójdzie za tobą."
+                )
+                print(f"[content] Using fallback content")
+                with open(STORY_FILE, "w", encoding="utf-8") as f:
+                    f.write(fallback)
+                return fallback
+
+def generate_visual_prompts(content: str) -> list:
+    """Generate stickman scene descriptions for self-help content."""
+    print(f"[scenes] Generating visual prompts in English...")
+
+    prompt = (
+        f"Read this Polish psychology content: '{content}'\n"
+        f"Generate exactly {NUM_IMAGES} detailed, visual image descriptions in ENGLISH based on this content. "
+        f"Describe stickman-style characters in relatable daily life situations (not animals). "
+        f"Show emotions, actions, and environments that match the psychology topic. "
+        f"Output ONLY the {NUM_IMAGES} descriptions, one per line. No numbering."
+    )
+
+    url = "https://gen.pollinations.ai/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {POLLINATIONS_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": "openai",
+        "messages": [
+            {"role": "system", "content": "You are a creative director for animation. Show relatable human situations, not animals."},
+            {"role": "user", "content": prompt}
+        ]
+    }
+
     try:
-        r = requests.get(url, headers=headers, params=params, timeout=60)
-        r.raise_for_status()
-        text = r.text.strip()
-        
-        # Clean up lines
+        r = requests.post(url, headers=headers, json=payload, timeout=60)
+        if r.status_code != 200:
+            raise Exception(f"API Error: {r.status_code} - {r.text}")
+        data = r.json()
+        text = data['choices'][0]['message']['content'].strip()
         lines = [line.strip().lstrip('0123456789.- ') for line in text.split('\n') if line.strip()]
-        
-        # Ensure we have enough scenes
         if len(lines) < NUM_IMAGES:
             while len(lines) < NUM_IMAGES:
-                lines.append(lines[-1] if lines else "Cute animal in magical forest")
-        
+                lines.append(lines[-1] + " close-up" if lines else "Stickman scene")
         scenes = lines[:NUM_IMAGES]
-        
     except Exception as e:
-        print(f"[scenes] Error generating prompts with Paid API: {e}")
-        scenes = ["Cute animal character in forest, high detail 3D"] * NUM_IMAGES
+        print(f"[scenes] Error generating prompts: {e}")
+        scenes = ["Stickman in a calm environment"] * NUM_IMAGES
 
-    # Save scenes
     with open(SCENES_FILE, "w", encoding="utf-8") as f:
         for i, scene in enumerate(scenes):
             f.write(f"{i+1}. {scene}\n")
-    
-    print(f"[scenes] Created {len(scenes)} visual descriptions")
+
+    print(f"[scenes] {len(scenes)} visual descriptions created")
     return scenes
 
-def generate_image(scene: str, idx: int) -> Path:
-    """Generate high-quality 3D animated animal image for each scene using Pollinations AI."""
-    # Create unique seed for each image based on scene content + index
-    seed = hash(scene + str(idx)) % 1000000
-    
-    # Build detailed, high-quality prompt for 3D animated kids content
-    prompt = (
-        f"Masterpiece, professional 3D render, Pixar style animation, Disney quality, {scene}, "
-        f"hyper-detailed character design, cute adorable animals with expressive eyes, "
-        f"vibrant cinematography, cinematic lighting, magical colorful environment, "
-        f"octane render, 8k resolution, extreme detail, soft studio light, "
-        f"perfect anatomy, no deformations, no warped limbs, no extra fingers, "
-        f"no distorted faces, clear sharp focus, extremely cute, high quality textures, "
-        f"magical atmosphere, child-friendly world"
-    )
-    safe_prompt = quote(prompt)
-    
-    api_key = os.getenv("POLLINATIONS_API_KEY")
-    if not api_key:
-        raise ValueError("POLLINATIONS_API_KEY is missing! Paid API access is required for image generation.")
-        
-    url = f"https://gen.pollinations.ai/image/{safe_prompt}"
-    headers = {"Authorization": f"Bearer {api_key}"}
-    
-    params = {
-        "width": IMAGE_WIDTH,
-        "height": IMAGE_HEIGHT,
-        "model": IMAGE_MODEL,
-        "seed": seed,
-        "nologo": "true"
-    }
+def download_image_from_drive(idx: int) -> Path:
+    """Pick a random stickman image from Google Drive folder (weighted by least-used)."""
+    from google.oauth2 import service_account
+    from googleapiclient.discovery import build
 
     out = IMAGES_DIR / f"scene_{idx:02d}.jpg"
-    print(f"[image] Generowanie obrazu 3D {idx+1}/{NUM_IMAGES} (Flux Paid): {scene[:50]}...")
-    
-    
-    # Retry logic with exponential backoff (longer waits for rate limits)
-    max_retries = 5
-    for attempt in range(max_retries):
+
+    service_key = os.environ.get("GOOGLE_SERVICE_ACCOUNT_KEY")
+    folder_id = os.environ.get(
+        "GOOGLE_DRIVE_FOLDER_ID",
+        "1E9NZSg5Ef-bcRIwMVcrJ-KsrmG0R1Zgv",
+    ).strip().strip('"').strip("'")
+    if not service_key:
+        raise ValueError("GOOGLE_SERVICE_ACCOUNT_KEY environment variable required")
+    if not folder_id:
+        raise ValueError("GOOGLE_DRIVE_FOLDER_ID environment variable required")
+
+    cred = service_account.Credentials.from_service_account_info(
+        json.loads(service_key), scopes=["https://www.googleapis.com/auth/drive.readonly"]
+    )
+    service = build("drive", "v3", credentials=cred)
+
+    all_files = []
+    page_token = None
+    while True:
+        r = service.files().list(
+            q=f"'{folder_id}' in parents and mimeType contains 'image/'",
+            fields="files(id, name)", pageSize=200, pageToken=page_token
+        ).execute()
+        all_files.extend(r.get("files", []))
+        page_token = r.get("nextPageToken")
+        if not page_token:
+            break
+
+    if not all_files:
+        raise RuntimeError(f"No image files found in Google Drive folder: {folder_id}")
+
+    used_log = Path("used_images.json")
+    usage = {}
+    if used_log.exists():
         try:
-            # Use params for query string
-            r = requests.get(url, headers=headers, params=params, timeout=180)
-            r.raise_for_status()
-            out.write_bytes(r.content)
-            time.sleep(2)  # Small delay between successful requests
-            return out
-        except requests.exceptions.HTTPError as e:
-            # Handle 429 rate limits with much longer waits
-            if e.response.status_code == 429:
-                wait_time = (attempt + 1) * 20  # 20, 40, 60, 80, 100 seconds
-                if attempt < max_retries - 1:
-                    print(f"[image] Rate limited! Retry {attempt+1}/{max_retries} (waiting {wait_time}s)")
-                    time.sleep(wait_time)
-                else:
-                    print(f"[image] Failed to generate image {idx+1}: Rate limit exceeded")
-                    raise e
-            else:
-                wait_time = (attempt + 1) * 5
-                if attempt < max_retries - 1:
-                    print(f"[image] HTTP {e.response.status_code}. Retry {attempt+1}/{max_retries} (waiting {wait_time}s)")
-                    time.sleep(wait_time)
-                else:
-                    print(f"[image] Failed to generate image {idx+1}: {e}")
-                    raise e
-        except Exception as e:
-            wait_time = (attempt + 1) * 5
-            if attempt < max_retries - 1:
-                print(f"[image] Retry {attempt+1}/{max_retries} (waiting {wait_time}s)")
-                time.sleep(wait_time)
-            else:
-                print(f"[image] Failed to generate image {idx+1}: {e}")
-                raise e
+            usage = json.loads(used_log.read_text())
+        except Exception:
+            usage = {}
+
+    for f in all_files:
+        if f["name"] not in usage:
+            usage[f["name"]] = 0
+
+    min_usage = min(usage.values())
+    weights = [1.0 / (usage[f["name"]] - min_usage + 1) for f in all_files]
+    chosen = random.choices(all_files, weights=weights, k=1)[0]
+    usage[chosen["name"]] += 1
+    used_log.write_text(json.dumps(usage, indent=2))
+
+    print(f"[image] Loading image from Google Drive: {chosen['name']} ...", flush=True)
+    request = service.files().get_media(fileId=chosen["id"])
+    from googleapiclient.http import MediaIoBaseDownload
+    import io
+    fh = io.BytesIO()
+    downloader = MediaIoBaseDownload(fh, request)
+    done = False
+    while not done:
+        _, done = downloader.next_chunk()
+    fh.seek(0)
+    out.write_bytes(fh.read())
+    print(f"  Saved: {out.name} ({out.stat().st_size // 1024} KB)", flush=True)
     return out
 
+def generate_image(scene: str, idx: int) -> Path:
+    """Pick image randomly from Google Drive instead of AI generation."""
+    return download_image_from_drive(idx)
+
 def generate_images(scenes: list):
-    """Generate unique 3D animated images for each scene SEQUENTIALLY (avoids rate limits)"""
-    print(f"[image] Generowanie {NUM_IMAGES} obrazów 3D sekwencyjnie (unikanie limitów)...")
+    """Download random images from Google Drive for each scene."""
+    print(f"[image] Downloading {NUM_IMAGES} random images from Google Drive...")
     return [generate_image(scene, i) for i, scene in enumerate(scenes)]
 
 def generate_tts(story: str):
@@ -371,7 +467,7 @@ def generate_word_subtitles():
     
     # Create ASS subtitle file with kid-friendly styling
     ass_content = f"""[Script Info]
-Title: Bajka dla Dzieci
+Title: Psychologia i Rozwój Osobisty
 ScriptType: v4.00+
 
 [V4+ Styles]
@@ -557,16 +653,16 @@ def main():
     print("=" * 60)
 
     # 1. Generate story with Pollinations AI
-    story = generate_story_with_pollinations(topic)
+    content = generate_psychology_content(topic)
     
-    # 2. Generate detailed ENGLISH visual prompts from the story
-    scenes = generate_visual_prompts(story)
+    # 2. Generate detailed ENGLISH visual prompts from the content
+    scenes = generate_visual_prompts(content)
     
     # 3. Generate unique images for each scene
     images = generate_images(scenes)
 
     # 4. Generate narration with TTS
-    generate_tts(story)
+    generate_tts(content)
     
     # 5. Generate word-level UPPERCASE subtitles with Whisper
     generate_word_subtitles()

@@ -41,19 +41,21 @@ def main():
     print(f"[upload] Video size: {file_size_mb:.2f} MB")
 
     # Read topic from used_topics.txt (unique each run)
-    title = "Bajka dla dzieci"
+    title = "Psychologia i rozwój osobisty"
     if os.path.exists("used_topics.txt"):
         with open("used_topics.txt", "r", encoding="utf-8") as f:
             lines = [line.strip() for line in f if line.strip()]
             if lines:
                 last_line = lines[-1]
-                # Remove date prefix if present (format: "YYYY-MM-DD - Topic")
-                if " - " in last_line:
+                # Remove date prefix if present (format: "YYYY-MM-DD: Topic")
+                if ": " in last_line:
+                    title = last_line.split(": ", 1)[1]
+                elif " - " in last_line:
                     title = last_line.split(" - ", 1)[1]
                 else:
                     title = last_line
 
-    # Read story text for description
+    # Read content text for description
     story_text = ""
     story_file = Path('output/story.txt')
     if story_file.exists():
@@ -61,18 +63,19 @@ def main():
 
     # Platform-specific content
     descriptions = {
-        'youtube': f"{title}\n\n{story_text}\n\n#BajkiDlaDzieci #Polski #DlaDzieci #Shorts",
-        'instagram': f"{title}\n\n{story_text}\n\n#BajkiDlaDzieci #Polski #DlaDzieci #Shorts",
-        'tiktok': f"{title}\n\n{story_text}\n\n#BajkiDlaDzieci #Polski #DlaDzieci",
-        'facebook': f"{title}\n\n{story_text}\n\n#BajkiDlaDzieci #Polski #DlaDzieci",
-        'threads': f"{title}\n\n{story_text}\n\n#BajkiDlaDzieci #Polski #DlaDzieci",
-        'twitter': f"{title}\n\n{story_text}\n\n#BajkiDlaDzieci #Polski #DlaDzieci",
-        'vk': f"{title}\n\n{story_text}\n\n#BajkiDlaDzieci #Polski #DlaDzieci"
+        'youtube': f"{title}\n\n{story_text}\n\n#Psychologia #RozwójOsobisty #SelfHelp #Shorts",
+        'instagram': f"{title}\n\n{story_text}\n\n#Psychologia #RozwójOsobisty #SelfHelp #Shorts",
+        'tiktok': f"{title}\n\n{story_text}\n\n#Psychologia #RozwójOsobisty #SelfHelp",
+        'facebook': f"{title}\n\n{story_text}\n\n#Psychologia #RozwójOsobisty #SelfHelp",
+        'threads': f"{title}\n\n{story_text}\n\n#Psychologia #RozwójOsobisty #SelfHelp",
+        'twitter': f"{title}\n\n{story_text}\n\n#Psychologia #RozwójOsobisty #SelfHelp",
+        'vk': f"{title}\n\n{story_text}\n\n#Psychologia #RozwójOsobisty #SelfHelp"
     }
 
     tags = [
-        'Bajki', 'Dzieci', 'Zwierzęta', 'Polska', 'Kids',
-        'Shorts', 'Animacja', 'Bajki dla dzieci', 'Polish'
+        'Psychologia', 'Rozwój osobisty', 'Self Help', 'Polska',
+        'Shorts', 'Mindfulness', 'Psychologia pozytywna', 'Polish',
+        'Emocje', 'Relacje', 'Motywacja'
     ]
 
     results = {}
